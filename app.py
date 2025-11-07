@@ -217,7 +217,13 @@ col_left, col_right = st.columns([1, 2])
 with col_left:
     top_n = st.slider("How many results to show", 10, 300, 60)
 with col_right:
-    media_filter = st.radio("Show recommendations for:", ["Both", "Movies only", "TV shows only"], horizontal=True, index=0)
+    # Store in session state to preserve across reruns
+    if "media_filter" not in st.session_state:
+        st.session_state.media_filter = "Both"
+    media_filter = st.radio("Show recommendations for:", ["Both", "Movies only", "TV shows only"],
+                           horizontal=True,
+                           key="media_filter_radio",
+                           index=["Both", "Movies only", "TV shows only"].index(st.session_state.media_filter))
 
 st.write("### Filters")
 filter_col1, filter_col2 = st.columns(2)
@@ -413,6 +419,9 @@ def recommend(selected, selected_actors):
     return out
 
 results = recommend(st.session_state.selected, st.session_state.selected_actors)
+
+# Update session state with current filter value
+st.session_state.media_filter = media_filter
 
 # Apply media type filter
 if media_filter == "Movies only":
