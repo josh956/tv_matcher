@@ -169,6 +169,40 @@ def collect_seed_cast(selected):
                 entry["weight"] += total_eps_in_tv_agg(c)
     return actors
 
+def is_talk_show(title: str) -> bool:
+    """Detect if a title is likely a talk show based on common patterns."""
+    if not title:
+        return False
+
+    title_lower = title.lower()
+
+    # Common talk show patterns
+    talk_show_patterns = [
+        "tonight show",
+        "late night",
+        "late show",
+        "live with",
+        "live!",
+        "watch what happens",
+        "jimmy kimmel",
+        "jimmy fallon",
+        "conan",
+        "daily show",
+        "colbert",
+        "real time with",
+        "last week tonight",
+        "ellen",
+        "james corden",
+        "seth meyers",
+        "today show",
+        "good morning",
+        "the view",
+        "the talk",
+        "wendy williams"
+    ]
+
+    return any(pattern in title_lower for pattern in talk_show_patterns)
+
 def titles_too_similar(title1: str, title2: str) -> bool:
     """Check if two titles are too similar (e.g., spin-offs, documentaries)."""
     if not title1 or not title2:
@@ -240,6 +274,10 @@ def recommend(selected):
             if any(titles_too_similar(candidate_title, sel_title) for sel_title in selected_titles):
                 continue
 
+            # Filter out talk shows
+            if is_talk_show(candidate_title):
+                continue
+
             rec = candidates.setdefault(cand_key, {
                 "media_type": mt,
                 "id": tid,
@@ -249,13 +287,16 @@ def recommend(selected):
                 "overlap_count": 0,
                 "seed_weight_sum": 0.0,
                 "candidate_episode_sum": 0,
-                "actor_info": {}  # actor_name -> source_titles list
+                "actor_info": {}  # actor_name -> {sources: [], profile: path}
             })
             rec["overlap_count"] += 1
             rec["seed_weight_sum"] += meta["weight"]
             rec["candidate_episode_sum"] += int(cr.get("episode_count") or 0)
-            # Track which selected title(s) this actor came from
-            rec["actor_info"][meta["name"]] = person_to_source.get(pid, [])
+            # Track which selected title(s) this actor came from and their profile photo
+            rec["actor_info"][meta["name"]] = {
+                "sources": person_to_source.get(pid, []),
+                "profile": meta.get("profile")
+            }
         prog.progress((i+1)/max(len(items), 1))
 
     out = [c for c in candidates.values() if c["overlap_count"] >= min_overlap]
@@ -293,12 +334,23 @@ else:
             if actor_info:
                 with st.expander(f"Show {len(actor_info)} shared cast"):
                     for name in sorted(actor_info.keys()):
-                        source_titles = actor_info[name]
-                        if source_titles:
-                            sources_str = ", ".join(source_titles)
-                            st.markdown(f"• {name} ({sources_str})")
-                        else:
-                            st.markdown(f"• {name}")
+                        info = actor_info[name]
+                        source_titles = info.get("sources", [])
+                        profile_path = info.get("profile")
+
+                        col1, col2 = st.columns([1, 4])
+                        with col1:
+                            profile_url = img_url(profile_path, api_key, kind="profile", size="h632")
+                            if profile_url:
+                                st.image(profile_url, width=120)
+                            else:
+                                st.write("👤")
+                        with col2:
+                            if source_titles:
+                                sources_str = ", ".join(source_titles)
+                                st.markdown(f"**{name}**  \n*from {sources_str}*")
+                            else:
+                                st.markdown(f"**{name}**")
 
 st.write("---")
 st.markdown("---")
