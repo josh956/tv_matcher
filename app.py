@@ -65,6 +65,18 @@ def tv_aggregate_credits(tv_id: int, key: str):
 def person_combined_credits(person_id: int, key: str):
     return tmdb_get(f"/person/{person_id}/combined_credits", key)
 
+@st.cache_data(ttl=24*3600, show_spinner=False)
+def get_videos(media_type: str, media_id: int, key: str):
+    """Get trailers and videos for a movie or TV show."""
+    endpoint = f"/{media_type}/{media_id}/videos"
+    return tmdb_get(endpoint, key)
+
+@st.cache_data(ttl=24*3600, show_spinner=False)
+def get_watch_providers(media_type: str, media_id: int, key: str):
+    """Get streaming availability for a movie or TV show."""
+    endpoint = f"/{media_type}/{media_id}/watch/providers"
+    return tmdb_get(endpoint, key)
+
 st.title("🎭 Cast-Overlap Recommender")
 
 api_key = os.environ.get("TMDB_KEY")
@@ -118,8 +130,13 @@ with st.expander("Search & select titles (movies or TV)", expanded=True):
                 else:
                     st.write("🎬")
                 st.caption(f"{s['title']} ({s['year']}) · *{s['media_type']}*")
-        if st.button("Clear selections"):
+                if st.button("✕ Remove", key=f"remove_{s['media_type']}_{s['id']}"):
+                    st.session_state.selected = [item for item in st.session_state.selected
+                                                  if not (item['media_type'] == s['media_type'] and item['id'] == s['id'])]
+                    st.rerun()
+        if st.button("Clear all selections"):
             st.session_state.selected = []
+            st.rerun()
 
 st.write("---")
 st.subheader("Ranking options")
@@ -287,6 +304,8 @@ def recommend(selected):
                 "overlap_count": 0,
                 "seed_weight_sum": 0.0,
                 "candidate_episode_sum": 0,
+                "vote_average": cr.get("vote_average", 0),
+                "vote_count": cr.get("vote_count", 0),
                 "actor_info": {}  # actor_name -> {sources: [], profile: path}
             })
             rec["overlap_count"] += 1
@@ -318,18 +337,60 @@ st.subheader("Recommendations")
 if not results:
     st.warning("No results met the current overlap threshold. Try lowering it.")
 else:
+    # Add CSS for consistent card heights
+    st.markdown("""
+        <style>
+        .rec-card {
+            min-height: 450px;
+            max-height: 450px;
+            overflow: hidden;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     cols = st.columns(5)
     for i, r in enumerate(results):
         with cols[i % 5]:
+            # Truncate long titles
+            title = r['title']
+            if len(title) > 50:
+                title = title[:47] + "..."
+
             poster_url = img_url(r["poster"], api_key)
             if poster_url:
                 st.image(poster_url, width=150)
             else:
                 st.write("🎬")
-            st.markdown(f"**{r['title']}** ({r['year']}) · *{r['media_type']}*")
-            st.caption(f"Overlap: **{r['overlap_count']}** actors"
-                       + (f" · seed-weight sum: {int(r['seed_weight_sum'])}" if r['seed_weight_sum'] else "")
-                       + (f" · cand. TV episodes: {int(r['candidate_episode_sum'])}" if r['candidate_episode_sum'] else ""))
+            st.markdown(f"**{title}** ({r['year']}) · *{r['media_type']}*")
+            st.caption(f"Overlap: **{r['overlap_count']}** actors")
+
+            # Get and display trailer
+            try:
+                videos_data = get_videos(r['media_type'], r['id'], api_key)
+                trailers = [v for v in videos_data.get("results", [])
+                           if v.get("type") == "Trailer" and v.get("site") == "YouTube"]
+                if trailers:
+                    trailer_key = trailers[0]["key"]
+                    st.markdown(f"[▶️ Watch Trailer](https://www.youtube.com/watch?v={trailer_key})")
+            except:
+                pass
+
+            # Get and display streaming platforms
+            try:
+                providers_data = get_watch_providers(r['media_type'], r['id'], api_key)
+                us_providers = providers_data.get("results", {}).get("US", {})
+
+                # Prioritize subscription services (flatrate)
+                platforms = []
+                if "flatrate" in us_providers:
+                    platforms = [p["provider_name"] for p in us_providers["flatrate"][:3]]
+                elif "buy" in us_providers:
+                    platforms = [p["provider_name"] for p in us_providers["buy"][:3]]
+
+                if platforms:
+                    st.caption(f"📺 {', '.join(platforms)}")
+            except:
+                pass
             actor_info = r["actor_info"]
             if actor_info:
                 with st.expander(f"Show {len(actor_info)} shared cast"):
