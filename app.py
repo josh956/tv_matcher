@@ -169,9 +169,39 @@ def collect_seed_cast(selected):
                 entry["weight"] += total_eps_in_tv_agg(c)
     return actors
 
+def titles_too_similar(title1: str, title2: str) -> bool:
+    """Check if two titles are too similar (e.g., spin-offs, documentaries)."""
+    if not title1 or not title2:
+        return False
+
+    # Normalize titles: lowercase, remove common punctuation
+    def normalize(t):
+        return t.lower().replace(":", "").replace("-", " ").replace("'", "").strip()
+
+    t1_norm = normalize(title1)
+    t2_norm = normalize(title2)
+
+    # Extract main words (length > 2 to ignore articles like "a", "an", "the")
+    words1 = set(w for w in t1_norm.split() if len(w) > 2)
+    words2 = set(w for w in t2_norm.split() if len(w) > 2)
+
+    if not words1 or not words2:
+        return False
+
+    # Calculate overlap ratio
+    overlap = words1.intersection(words2)
+    smaller_set_size = min(len(words1), len(words2))
+
+    # If 70%+ of the smaller title's words appear in the other, they're too similar
+    if smaller_set_size > 0 and len(overlap) / smaller_set_size >= 0.7:
+        return True
+
+    return False
+
 def recommend(selected):
     seed = collect_seed_cast(selected)
     selected_keys = {(s["media_type"], s["id"]) for s in selected}
+    selected_titles = [s["title"] for s in selected]
     candidates = {}  # (mt,id) -> dict
 
     prog = st.progress(0.0, text="Collecting candidates from overlapping actors…")
@@ -192,6 +222,11 @@ def recommend(selected):
             if cand_key in seen_this_actor:
                 continue
             seen_this_actor.add(cand_key)
+
+            # Check if candidate title is too similar to any selected title
+            candidate_title = cr.get("title") or cr.get("name")
+            if any(titles_too_similar(candidate_title, sel_title) for sel_title in selected_titles):
+                continue
 
             rec = candidates.setdefault(cand_key, {
                 "media_type": mt,
