@@ -202,6 +202,18 @@ def recommend(selected):
     seed = collect_seed_cast(selected)
     selected_keys = {(s["media_type"], s["id"]) for s in selected}
     selected_titles = [s["title"] for s in selected]
+    # Map person_id to which selected title they came from
+    person_to_source = {}
+    for s in selected:
+        if s["media_type"] == "movie":
+            data = movie_credits(s["id"], api_key)
+            for c in data.get("cast", []):
+                person_to_source.setdefault(c["id"], []).append(s["title"])
+        else:
+            data = tv_aggregate_credits(s["id"], api_key)
+            for c in data.get("cast", []):
+                person_to_source.setdefault(c["id"], []).append(s["title"])
+
     candidates = {}  # (mt,id) -> dict
 
     prog = st.progress(0.0, text="Collecting candidates from overlapping actors…")
@@ -237,12 +249,13 @@ def recommend(selected):
                 "overlap_count": 0,
                 "seed_weight_sum": 0.0,
                 "candidate_episode_sum": 0,
-                "names": set()
+                "actor_info": {}  # actor_name -> source_titles list
             })
             rec["overlap_count"] += 1
             rec["seed_weight_sum"] += meta["weight"]
             rec["candidate_episode_sum"] += int(cr.get("episode_count") or 0)
-            rec["names"].add(meta["name"])
+            # Track which selected title(s) this actor came from
+            rec["actor_info"][meta["name"]] = person_to_source.get(pid, [])
         prog.progress((i+1)/max(len(items), 1))
 
     out = [c for c in candidates.values() if c["overlap_count"] >= min_overlap]
@@ -276,11 +289,16 @@ else:
             st.caption(f"Overlap: **{r['overlap_count']}** actors"
                        + (f" · seed-weight sum: {int(r['seed_weight_sum'])}" if r['seed_weight_sum'] else "")
                        + (f" · cand. TV episodes: {int(r['candidate_episode_sum'])}" if r['candidate_episode_sum'] else ""))
-            names = sorted(list(r["names"]))
-            if names:
-                with st.expander(f"Show {len(names)} shared cast"):
-                    for name in names:
-                        st.markdown(f"• {name}")
+            actor_info = r["actor_info"]
+            if actor_info:
+                with st.expander(f"Show {len(actor_info)} shared cast"):
+                    for name in sorted(actor_info.keys()):
+                        source_titles = actor_info[name]
+                        if source_titles:
+                            sources_str = ", ".join(source_titles)
+                            st.markdown(f"• {name} ({sources_str})")
+                        else:
+                            st.markdown(f"• {name}")
 
 st.write("---")
 st.markdown("---")
