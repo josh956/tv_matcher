@@ -77,6 +77,20 @@ def get_watch_providers(media_type: str, media_id: int, key: str):
     endpoint = f"/{media_type}/{media_id}/watch/providers"
     return tmdb_get(endpoint, key)
 
+@st.cache_data(ttl=24*3600, show_spinner=False)
+def search_person(query: str, key: str):
+    """Search for actors/people."""
+    return tmdb_get("/search/person", key, {"query": query, "include_adult": "false"})
+
+@st.cache_data(ttl=24*3600, show_spinner=False)
+def get_genre_list(key: str):
+    """Get list of all genres for movies and TV."""
+    movie_genres = tmdb_get("/genre/movie/list", key).get("genres", [])
+    tv_genres = tmdb_get("/genre/tv/list", key).get("genres", [])
+    # Combine and deduplicate
+    all_genres = {g["id"]: g["name"] for g in movie_genres + tv_genres}
+    return all_genres
+
 st.title("🎭 Cast-Overlap Recommender")
 
 api_key = os.environ.get("TMDB_KEY")
@@ -90,6 +104,8 @@ with st.expander("Search & select titles (movies or TV)", expanded=True):
     q = st.text_input("Search title:")
     if "selected" not in st.session_state:
         st.session_state.selected = []  # list of dicts
+    if "selected_actors" not in st.session_state:
+        st.session_state.selected_actors = []  # list of person dicts
 
     if q:
         res = search_multi(q, api_key) or {}
@@ -138,6 +154,58 @@ with st.expander("Search & select titles (movies or TV)", expanded=True):
             st.session_state.selected = []
             st.rerun()
 
+# ---- Actor search + select ----
+with st.expander("Search & select individual actors", expanded=False):
+    actor_q = st.text_input("Search actor/actress:")
+
+    if actor_q:
+        actor_res = search_person(actor_q, api_key) or {}
+        actor_hits = []
+        for person in actor_res.get("results", [])[:20]:
+            if person.get("known_for_department") == "Acting":
+                actor_hits.append({
+                    "id": person["id"],
+                    "name": person.get("name"),
+                    "profile_path": person.get("profile_path"),
+                    "known_for": person.get("known_for", [])
+                })
+
+        cols = st.columns(4)
+        for i, actor in enumerate(actor_hits):
+            with cols[i % 4]:
+                profile_url = img_url(actor["profile_path"], api_key, kind="profile", size="h632")
+                if profile_url:
+                    st.image(profile_url, width=120)
+                else:
+                    st.write("👤")
+                st.write(f"**{actor['name']}**")
+                # Show what they're known for
+                known_titles = [kf.get("title") or kf.get("name") for kf in actor["known_for"][:2]]
+                if known_titles:
+                    st.caption(f"Known for: {', '.join(known_titles)}")
+                if st.button(f"Add · {actor['name']}", key=f"add_actor_{actor['id']}"):
+                    if not any(a["id"] == actor["id"] for a in st.session_state.selected_actors):
+                        st.session_state.selected_actors.append(actor)
+                        st.rerun()
+
+    if st.session_state.selected_actors:
+        st.write("### Selected Actors")
+        actor_cols = st.columns(6)
+        for i, actor in enumerate(st.session_state.selected_actors):
+            with actor_cols[i % 6]:
+                profile_url = img_url(actor.get("profile_path"), api_key, kind="profile", size="h632")
+                if profile_url:
+                    st.image(profile_url, width=120)
+                else:
+                    st.write("👤")
+                st.caption(f"{actor['name']}")
+                if st.button("✕ Remove", key=f"remove_actor_{actor['id']}"):
+                    st.session_state.selected_actors = [a for a in st.session_state.selected_actors if a['id'] != actor['id']]
+                    st.rerun()
+        if st.button("Clear all actors"):
+            st.session_state.selected_actors = []
+            st.rerun()
+
 st.write("---")
 st.subheader("Ranking options")
 c1, c2, c3, c4 = st.columns(4)
@@ -151,8 +219,18 @@ with col_left:
 with col_right:
     media_filter = st.radio("Show recommendations for:", ["Both", "Movies only", "TV shows only"], horizontal=True, index=0)
 
-if not st.session_state.selected:
-    st.info("Add at least one title to get recommendations.")
+st.write("### Filters")
+filter_col1, filter_col2 = st.columns(2)
+with filter_col1:
+    # Get all genres
+    all_genres = get_genre_list(api_key)
+    genre_names = sorted(all_genres.values())
+    selected_genres = st.multiselect("Filter by genres (optional)", genre_names, default=[])
+with filter_col2:
+    actor_name_filter = st.text_input("Filter by actor name (optional)")
+
+if not st.session_state.selected and not st.session_state.selected_actors:
+    st.info("Add at least one title or actor to get recommendations.")
     st.stop()
 
 # ---- Build seed cast ----
@@ -162,7 +240,7 @@ def total_eps_in_tv_agg(c):
     roles = c.get("roles") or []
     return sum((r.get("episode_count") or 0) for r in roles)
 
-def collect_seed_cast(selected):
+def collect_seed_cast(selected, selected_actors):
     # person_id -> dict(name, profile_path, weight)
     actors = {}
     for s in selected:
@@ -184,6 +262,13 @@ def collect_seed_cast(selected):
                 pid = c["id"]
                 entry = actors.setdefault(pid, {"name": c.get("name"), "profile": c.get("profile_path"), "weight": 0.0})
                 entry["weight"] += total_eps_in_tv_agg(c)
+
+    # Add individually selected actors with high weight
+    for actor in selected_actors:
+        pid = actor["id"]
+        entry = actors.setdefault(pid, {"name": actor.get("name"), "profile": actor.get("profile_path"), "weight": 0.0})
+        entry["weight"] += 20.0  # Give individually selected actors high weight
+
     return actors
 
 def is_talk_show(title: str) -> bool:
@@ -249,8 +334,8 @@ def titles_too_similar(title1: str, title2: str) -> bool:
 
     return False
 
-def recommend(selected):
-    seed = collect_seed_cast(selected)
+def recommend(selected, selected_actors):
+    seed = collect_seed_cast(selected, selected_actors)
     selected_keys = {(s["media_type"], s["id"]) for s in selected}
     selected_titles = [s["title"] for s in selected]
     # Map person_id to which selected title they came from
@@ -264,6 +349,10 @@ def recommend(selected):
             data = tv_aggregate_credits(s["id"], api_key)
             for c in data.get("cast", []):
                 person_to_source.setdefault(c["id"], []).append(s["title"])
+
+    # Add individually selected actors to source map
+    for actor in selected_actors:
+        person_to_source.setdefault(actor["id"], []).append(f"[Actor: {actor['name']}]")
 
     candidates = {}  # (mt,id) -> dict
 
@@ -306,6 +395,7 @@ def recommend(selected):
                 "candidate_episode_sum": 0,
                 "vote_average": cr.get("vote_average", 0),
                 "vote_count": cr.get("vote_count", 0),
+                "genre_ids": cr.get("genre_ids", []),
                 "actor_info": {}  # actor_name -> {sources: [], profile: path}
             })
             rec["overlap_count"] += 1
@@ -322,13 +412,25 @@ def recommend(selected):
     out.sort(key=lambda x: (-x["overlap_count"], -x["seed_weight_sum"], -x["candidate_episode_sum"]))
     return out
 
-results = recommend(st.session_state.selected)
+results = recommend(st.session_state.selected, st.session_state.selected_actors)
 
 # Apply media type filter
 if media_filter == "Movies only":
     results = [r for r in results if r["media_type"] == "movie"]
 elif media_filter == "TV shows only":
     results = [r for r in results if r["media_type"] == "tv"]
+
+# Apply genre filter
+if selected_genres:
+    # Convert genre names back to IDs
+    genre_id_map = {v: k for k, v in all_genres.items()}
+    selected_genre_ids = [genre_id_map[name] for name in selected_genres]
+    results = [r for r in results if any(gid in r.get("genre_ids", []) for gid in selected_genre_ids)]
+
+# Apply actor name filter
+if actor_name_filter:
+    filter_lower = actor_name_filter.lower()
+    results = [r for r in results if any(filter_lower in actor_name.lower() for actor_name in r["actor_info"].keys())]
 
 results = results[:top_n]
 
