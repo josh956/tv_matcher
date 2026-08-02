@@ -167,6 +167,11 @@ def get_watch_providers(media_type: str, media_id: int, key: str):
     return tmdb_get(endpoint, key)
 
 @st.cache_data(ttl=24*3600, show_spinner=False)
+def get_tv_details(tv_id: int, key: str):
+    """Get TV metadata, including the number of seasons."""
+    return tmdb_get(f"/tv/{tv_id}", key)
+
+@st.cache_data(ttl=24*3600, show_spinner=False)
 def search_person(query: str, key: str):
     """Search for actors/people."""
     return tmdb_get("/search/person", key, {"query": query, "include_adult": "false"})
@@ -401,6 +406,11 @@ with filter_col1:
     selected_genres = st.multiselect("Filter by genres (optional)", genre_names, default=[])
 with filter_col2:
     actor_name_filter = st.text_input("Filter by actor name (optional)")
+    exclude_long_shows = st.checkbox(
+        "Exclude TV shows with more than 10 seasons",
+        value=True,
+        help="Movies are unaffected. Limited series and shows with 10 or fewer seasons remain visible.",
+    )
 
 if not st.session_state.selected and not st.session_state.selected_actors:
     st.info("Add at least one title or actor to get recommendations.")
@@ -608,7 +618,25 @@ if actor_name_filter:
     filter_lower = actor_name_filter.lower()
     results = [r for r in results if any(filter_lower in actor_name.lower() for actor_name in r["actor_info"].keys())]
 
-results = results[:top_n]
+# Exclude unusually long-running TV shows without making unnecessary detail requests.
+if exclude_long_shows:
+    filtered_results = []
+    for result in results:
+        if result["media_type"] == "tv":
+            try:
+                season_count = int(get_tv_details(result["id"], api_key).get("number_of_seasons") or 0)
+                result["number_of_seasons"] = season_count
+                if season_count > 10:
+                    continue
+            except (RuntimeError, TypeError, ValueError):
+                # Keep the result if TMDb cannot provide its season count.
+                pass
+        filtered_results.append(result)
+        if len(filtered_results) >= top_n:
+            break
+    results = filtered_results
+else:
+    results = results[:top_n]
 
 st.write("---")
 st.subheader("Recommendations")
