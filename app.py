@@ -300,6 +300,7 @@ with st.expander("Search & select titles (movies or TV)", expanded=True):
                 if st.button("♡ Save", key=f"search_save_{h['media_type']}_{h['id']}"):
                     if add_to_saved_list(save_target, h):
                         st.toast(f"Saved to {save_target}")
+                        st.rerun()
                     else:
                         st.toast(f"Already in {save_target}")
 
@@ -651,6 +652,7 @@ else:
             if st.button("♡ Save", key=f"rec_save_{r['media_type']}_{r['id']}", use_container_width=True):
                 if add_to_saved_list(save_target, r):
                     st.toast(f"Saved to {save_target}")
+                    st.rerun()
                 else:
                     st.toast(f"Already in {save_target}")
 
