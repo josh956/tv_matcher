@@ -291,18 +291,16 @@ with st.expander("Search & select titles (movies or TV)", expanded=True):
                 if st.button(f"Add · {h['title']}", key=f"add_{h['media_type']}_{h['id']}"):
                     if not any(s["media_type"]==h["media_type"] and s["id"]==h["id"] for s in st.session_state.selected):
                         st.session_state.selected.append(h)
-                save_target = st.selectbox(
-                    "Save to",
-                    list(saved_lists.keys()),
-                    key=f"search_save_target_{h['media_type']}_{h['id']}",
-                    label_visibility="collapsed",
-                )
-                if st.button("♡ Save", key=f"search_save_{h['media_type']}_{h['id']}"):
-                    if add_to_saved_list(save_target, h):
-                        st.toast(f"Saved to {save_target}")
+                if st.button(
+                    f"＋ Add to {active_list}",
+                    key=f"search_save_{h['media_type']}_{h['id']}",
+                    use_container_width=True,
+                ):
+                    if add_to_saved_list(active_list, h):
+                        st.toast(f"Added to {active_list}")
                         st.rerun()
                     else:
-                        st.toast(f"Already in {save_target}")
+                        st.toast(f"Already in {active_list}")
 
     if st.session_state.selected:
         st.write("### Selected")
@@ -643,18 +641,16 @@ else:
                 st.write("🎬")
             st.markdown(f"**{title}** ({r['year']}) · *{r['media_type']}*")
             st.caption(f"Overlap: **{r['overlap_count']}** actors")
-            save_target = st.selectbox(
-                "Save to",
-                list(saved_lists.keys()),
-                key=f"rec_save_target_{r['media_type']}_{r['id']}",
-                label_visibility="collapsed",
-            )
-            if st.button("♡ Save", key=f"rec_save_{r['media_type']}_{r['id']}", use_container_width=True):
-                if add_to_saved_list(save_target, r):
-                    st.toast(f"Saved to {save_target}")
+            if st.button(
+                f"＋ Add to {active_list}",
+                key=f"rec_save_{r['media_type']}_{r['id']}",
+                use_container_width=True,
+            ):
+                if add_to_saved_list(active_list, r):
+                    st.toast(f"Added to {active_list}")
                     st.rerun()
                 else:
-                    st.toast(f"Already in {save_target}")
+                    st.toast(f"Already in {active_list}")
 
             # Get and display trailer
             try:
