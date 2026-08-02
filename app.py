@@ -1,12 +1,101 @@
 # app.py
+import json
 import os
+import threading
 import time
+from pathlib import Path
+
 import requests
 import streamlit as st
 
 st.set_page_config(page_title="Cast-Overlap Recommender", layout="wide")
 
 TMDB_BASE = "https://api.themoviedb.org/3"
+SAVED_LISTS_FILE = Path(os.environ.get("SAVED_LISTS_FILE", "saved_lists.json"))
+DEFAULT_LISTS = ("Josh", "Valentina")
+_saved_lists_lock = threading.Lock()
+
+
+def load_saved_lists():
+    """Load the shared named lists, creating the defaults when needed."""
+    with _saved_lists_lock:
+        try:
+            if SAVED_LISTS_FILE.exists():
+                data = json.loads(SAVED_LISTS_FILE.read_text(encoding="utf-8"))
+            else:
+                data = {}
+        except (OSError, json.JSONDecodeError):
+            data = {}
+
+        changed = False
+        for name in DEFAULT_LISTS:
+            if name not in data:
+                data[name] = []
+                changed = True
+
+        if changed or not SAVED_LISTS_FILE.exists():
+            write_saved_lists(data)
+        return data
+
+
+def write_saved_lists(data):
+    """Atomically write the shared lists to disk."""
+    SAVED_LISTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = SAVED_LISTS_FILE.with_suffix(SAVED_LISTS_FILE.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    temporary.replace(SAVED_LISTS_FILE)
+
+
+def add_to_saved_list(list_name, item):
+    with _saved_lists_lock:
+        try:
+            data = json.loads(SAVED_LISTS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {name: [] for name in DEFAULT_LISTS}
+
+        saved_item = {
+            "media_type": item["media_type"],
+            "id": item["id"],
+            "title": item["title"],
+            "year": item.get("year", ""),
+            "poster_path": item.get("poster_path") or item.get("poster"),
+        }
+        items = data.setdefault(list_name, [])
+        if not any(x["media_type"] == saved_item["media_type"] and x["id"] == saved_item["id"] for x in items):
+            items.append(saved_item)
+            write_saved_lists(data)
+            return True
+        return False
+
+
+def remove_from_saved_list(list_name, media_type, media_id):
+    with _saved_lists_lock:
+        try:
+            data = json.loads(SAVED_LISTS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        data[list_name] = [
+            item for item in data.get(list_name, [])
+            if not (item["media_type"] == media_type and item["id"] == media_id)
+        ]
+        write_saved_lists(data)
+
+
+def create_saved_list(list_name):
+    clean_name = list_name.strip()
+    if not clean_name:
+        return False
+    with _saved_lists_lock:
+        try:
+            data = json.loads(SAVED_LISTS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {name: [] for name in DEFAULT_LISTS}
+        if clean_name in data:
+            return False
+        data[clean_name] = []
+        write_saved_lists(data)
+        return True
+
 
 def _is_bearer(token: str) -> bool:
     return "." in (token or "")
@@ -99,6 +188,74 @@ if not api_key:
     st.stop()
 st.text("Using TMDb key from TMDB_KEY env var.")
 
+if "selected" not in st.session_state:
+    st.session_state.selected = []
+if "selected_actors" not in st.session_state:
+    st.session_state.selected_actors = []
+
+# ---- Persistent saved lists ----
+try:
+    saved_lists = load_saved_lists()
+except OSError as exc:
+    st.error(f"Saved lists could not be loaded: {exc}")
+    saved_lists = {name: [] for name in DEFAULT_LISTS}
+
+st.sidebar.title("📚 Saved lists")
+active_list = st.sidebar.radio(
+    "Open list",
+    list(saved_lists.keys()),
+    label_visibility="collapsed",
+)
+active_items = saved_lists.get(active_list, [])
+st.sidebar.subheader(active_list)
+
+if active_items:
+    if st.sidebar.button(
+        "Use entire list as recommendation inputs",
+        key=f"use_list_{active_list}",
+        use_container_width=True,
+    ):
+        existing = {(item["media_type"], item["id"]) for item in st.session_state.selected}
+        st.session_state.selected.extend(
+            item for item in active_items
+            if (item["media_type"], item["id"]) not in existing
+        )
+        st.rerun()
+
+    for item in active_items:
+        st.sidebar.markdown(f"**{item['title']}** ({item.get('year', '')})")
+        left, right = st.sidebar.columns([3, 2])
+        with left:
+            if st.button(
+                "Use",
+                key=f"use_saved_{active_list}_{item['media_type']}_{item['id']}",
+                use_container_width=True,
+            ):
+                if not any(
+                    selected["media_type"] == item["media_type"] and selected["id"] == item["id"]
+                    for selected in st.session_state.selected
+                ):
+                    st.session_state.selected.append(item)
+                st.rerun()
+        with right:
+            if st.button(
+                "Remove",
+                key=f"delete_saved_{active_list}_{item['media_type']}_{item['id']}",
+                use_container_width=True,
+            ):
+                remove_from_saved_list(active_list, item["media_type"], item["id"])
+                st.rerun()
+else:
+    st.sidebar.caption("Nothing saved here yet.")
+
+with st.sidebar.expander("＋ Create another list"):
+    new_list_name = st.text_input("List name", key="new_saved_list_name")
+    if st.button("Create list", use_container_width=True):
+        if create_saved_list(new_list_name):
+            st.rerun()
+        else:
+            st.warning("Enter a unique list name.")
+
 # ---- Search + select ----
 with st.expander("Search & select titles (movies or TV)", expanded=True):
     q = st.text_input("Search title:")
@@ -134,6 +291,17 @@ with st.expander("Search & select titles (movies or TV)", expanded=True):
                 if st.button(f"Add · {h['title']}", key=f"add_{h['media_type']}_{h['id']}"):
                     if not any(s["media_type"]==h["media_type"] and s["id"]==h["id"] for s in st.session_state.selected):
                         st.session_state.selected.append(h)
+                save_target = st.selectbox(
+                    "Save to",
+                    list(saved_lists.keys()),
+                    key=f"search_save_target_{h['media_type']}_{h['id']}",
+                    label_visibility="collapsed",
+                )
+                if st.button("♡ Save", key=f"search_save_{h['media_type']}_{h['id']}"):
+                    if add_to_saved_list(save_target, h):
+                        st.toast(f"Saved to {save_target}")
+                    else:
+                        st.toast(f"Already in {save_target}")
 
     if st.session_state.selected:
         st.write("### Selected")
@@ -474,6 +642,17 @@ else:
                 st.write("🎬")
             st.markdown(f"**{title}** ({r['year']}) · *{r['media_type']}*")
             st.caption(f"Overlap: **{r['overlap_count']}** actors")
+            save_target = st.selectbox(
+                "Save to",
+                list(saved_lists.keys()),
+                key=f"rec_save_target_{r['media_type']}_{r['id']}",
+                label_visibility="collapsed",
+            )
+            if st.button("♡ Save", key=f"rec_save_{r['media_type']}_{r['id']}", use_container_width=True):
+                if add_to_saved_list(save_target, r):
+                    st.toast(f"Saved to {save_target}")
+                else:
+                    st.toast(f"Already in {save_target}")
 
             # Get and display trailer
             try:
