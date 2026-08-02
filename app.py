@@ -412,6 +412,24 @@ with filter_col2:
         help="Movies are unaffected. Limited series and shows with 10 or fewer seasons remain visible.",
     )
 
+st.markdown("**Cast relevance used to build recommendations**")
+cast_col1, cast_col2, cast_col3 = st.columns(3)
+include_lead_cast = cast_col1.checkbox(
+    "Lead cast",
+    value=True,
+    help="Movies: top 10 billed performers. TV: top 10 performers ranked by episode count.",
+)
+include_supporting_cast = cast_col2.checkbox(
+    "Supporting / recurring cast",
+    value=True,
+    help="Movies: billing positions 11–25. TV: the next 20 performers who meet the minimum-episode setting.",
+)
+include_minor_cast = cast_col3.checkbox(
+    "Minor / guest cast",
+    value=False,
+    help="Everyone else within the maximum-cast setting, including small roles and guest appearances.",
+)
+
 if not st.session_state.selected and not st.session_state.selected_actors:
     st.info("Add at least one title or actor to get recommendations.")
     st.stop()
@@ -423,6 +441,14 @@ def total_eps_in_tv_agg(c):
     roles = c.get("roles") or []
     return sum((r.get("episode_count") or 0) for r in roles)
 
+def cast_group_is_enabled(group):
+    return {
+        "lead": include_lead_cast,
+        "supporting": include_supporting_cast,
+        "minor": include_minor_cast,
+    }[group]
+
+
 def collect_seed_cast(selected, selected_actors):
     # person_id -> dict(name, profile_path, weight)
     actors = {}
@@ -430,7 +456,10 @@ def collect_seed_cast(selected, selected_actors):
         if s["media_type"] == "movie":
             data = movie_credits(s["id"], api_key)
             cast = sorted(data.get("cast", []), key=lambda x: x.get("order", 10**6))[:max_cast_per_title]
-            for c in cast:
+            for rank, c in enumerate(cast):
+                group = "lead" if rank < 10 else "supporting" if rank < 25 else "minor"
+                if not cast_group_is_enabled(group):
+                    continue
                 pid = c["id"]
                 entry = actors.setdefault(pid, {"name": c.get("name"), "profile": c.get("profile_path"), "weight": 0.0})
                 order = c.get("order")
@@ -438,13 +467,20 @@ def collect_seed_cast(selected, selected_actors):
                 entry["weight"] += bump
         else:
             data = tv_aggregate_credits(s["id"], api_key)
-            cast = data.get("cast", [])
-            cast = [c for c in cast if total_eps_in_tv_agg(c) >= min_tv_episodes]
-            cast = sorted(cast, key=total_eps_in_tv_agg, reverse=True)[:max_cast_per_title]
-            for c in cast:
+            cast = sorted(data.get("cast", []), key=total_eps_in_tv_agg, reverse=True)[:max_cast_per_title]
+            for rank, c in enumerate(cast):
+                episode_count = total_eps_in_tv_agg(c)
+                if rank < 10:
+                    group = "lead"
+                elif rank < 30 and episode_count >= min_tv_episodes:
+                    group = "supporting"
+                else:
+                    group = "minor"
+                if not cast_group_is_enabled(group):
+                    continue
                 pid = c["id"]
                 entry = actors.setdefault(pid, {"name": c.get("name"), "profile": c.get("profile_path"), "weight": 0.0})
-                entry["weight"] += total_eps_in_tv_agg(c)
+                entry["weight"] += episode_count
 
     # Add individually selected actors with high weight
     for actor in selected_actors:
